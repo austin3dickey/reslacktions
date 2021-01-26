@@ -127,3 +127,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Rstudio
+.Rproj.user
+*.Rproj
+.Rhistory
+
+reactions/*
+all_reactions.csv
