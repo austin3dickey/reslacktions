@@ -66,19 +66,25 @@ def get_one_page(
     if cursor:
         kwargs["cursor"] = cursor
 
-    try:
-        res = client.reactions_list(**kwargs).validate().data
-    except SlackApiError as e:
-        if e.response["error"] == "ratelimited":
-            delay = int(e.response.headers["Retry-After"])
-            tqdm.write(f"Rate limited. Retrying in {delay} seconds")
-            time.sleep(delay)
+    res = None
+    internal_errors_left = 3
+    while not res:
+        try:
             res = client.reactions_list(**kwargs).validate().data
-        elif e.response["error"] == "internal_error":
-            # I have no idea why these happen but they seem to occur on certain cursors
-            res = {"items": [], "response_metadata": {}}
-        else:
-            raise e
+        except SlackApiError as e:
+            if e.response["error"] == "ratelimited":
+                delay = int(e.response.headers["Retry-After"])
+                tqdm.write(f"Rate limited. Retrying in {delay} seconds")
+                time.sleep(delay)
+            elif e.response["error"] == "internal_error":
+                # I have no idea why these happen but they seem to occur on certain cursors
+                internal_errors_left -= 1
+                tqdm.write(f"Internal error. Retrying in 3 seconds")
+                time.sleep(3)
+                if internal_errors_left <= 0:
+                    res = {"items": [], "response_metadata": {}}
+            else:
+                raise e
 
     # Slack gives us a mix of message types
     for item in res["items"]:
