@@ -30,24 +30,30 @@ def get_reactions(user_id: str, page_size: int) -> pd.DataFrame:
         page_size: The max number of items to return
 
     Returns:
-        A pd.DataFrame with columns 'emoji' (the emoji name) and 'count' (the number of times this
-        user reacted with this emoji)
+        A pd.DataFrame with columns 'emoji' (the emoji name), 'count' (the number of times this user
+        reacted with this emoji), and 'count_first' (the number of times this user was the first to
+        react with this emoji)
     """
     user_reactions = {}
-    cursor = get_one_page(user_reactions, user_id, page_size, None)
+    messages_seen = []
+    cursor = get_one_page(user_reactions, messages_seen, user_id, page_size, None)
     while cursor:
-        cursor = get_one_page(user_reactions, user_id, page_size, cursor)
+        cursor = get_one_page(user_reactions, messages_seen, user_id, page_size, cursor)
 
-    return pd.DataFrame(data=user_reactions.items(), columns=["emoji", "count"])
+    return pd.DataFrame(
+        data=[(k, v["total"], v["first"]) for k, v in user_reactions.items()],
+        columns=["emoji", "count", "count_first"]
+    )
 
 
 def get_one_page(
-    user_reactions: dict, user_id: str, page_size: int, cursor: Optional[str]
+    user_reactions: dict, messages_seen: list, user_id: str, page_size: int, cursor: Optional[str]
 ) -> Optional[str]:
     """Modifies the user_reactions dict in place, adding reaction counts based on one page of data
 
     Args:
-        user_reactions: The dict of {"reaction_name": <count>}
+        user_reactions: The dict of {"reaction_name": (<count>, <first_count>)}
+        messages_seen: A list of message timestamps already counted
         user_id: The user_id to filter to
         page_size: The max number of items to return
         cursor: Optional cursor in pagination
@@ -64,28 +70,40 @@ def get_one_page(
         res = client.reactions_list(**kwargs).validate().data
     except SlackApiError as e:
         if e.response["error"] == "ratelimited":
-            delay = int(e.response.headers["Retry-After"]) + 2
+            delay = int(e.response.headers["Retry-After"])
             tqdm.write(f"Rate limited. Retrying in {delay} seconds")
             time.sleep(delay)
             res = client.reactions_list(**kwargs).validate().data
         elif e.response["error"] == "internal_error":
+            # I have no idea why these happen but they seem to occur on certain cursors
             res = {"items": [], "response_metadata": {}}
         else:
             raise e
 
+    # Slack gives us a mix of message types
     for item in res["items"]:
         if "message" in item:
             reacts = item["message"]["reactions"]
+            message_ts = item["message"]["ts"]
         elif "comment" in item:
             reacts = item["comment"]["reactions"]
+            message_ts = item["comment"]["timestamp"]
         elif "file" in item:
             reacts = item["file"]["reactions"]
+            message_ts = item["file"]["created"]
         else:
             reacts = []
+            message_ts = 0
 
-        for react in reacts:
-            if user_id in react["users"]:
-                user_reactions[react["name"]] = user_reactions.get(react["name"], 0) + 1
+        if message_ts not in messages_seen:
+            messages_seen.append(message_ts)
+            for react in reacts:
+                if user_id in react["users"]:
+                    value = user_reactions.get(react["name"], {"total": 0, "first": 0})
+                    value["total"] += 1
+                    if user_id == react["users"][0]:
+                        value["first"] += 1
+                    user_reactions[react["name"]] = value
 
     return res["response_metadata"].get("next_cursor", None)
 
